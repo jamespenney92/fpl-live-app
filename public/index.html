@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FPL Live Mini-League Tracker</title>
+    <title>FPL Mini-League Historical Tracker</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -60,29 +60,6 @@
         button:hover {
             background: #00e075;
         }
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 15px;
-            margin-bottom: 25px;
-        }
-        .card {
-            background: #f8f9fa;
-            border-left: 5px solid #37003c;
-            padding: 15px;
-            border-radius: 6px;
-        }
-        .card h3 {
-            margin: 0 0 5px 0;
-            font-size: 14px;
-            color: #666;
-            text-transform: uppercase;
-        }
-        .card .value {
-            font-size: 18px;
-            font-weight: bold;
-            color: #37003c;
-        }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -121,31 +98,22 @@
 
         <div class="controls">
             <input type="text" id="league-input" value="474413" placeholder="League ID">
-            <select id="gw-select" onchange="changeGameweek()">
-                <option value="current">Latest Gameweek Update</option>
+            <select id="gw-select" onchange="renderSelectedGameweek()" disabled>
+                <option value="">-- Load league first --</option>
             </select>
             <button onclick="fetchLeague()">Refresh Data</button>
         </div>
 
-        <div id="summary-section" class="summary-cards" style="display: none;">
-            <div class="card">
-                <h3>🏆 Gameweek High Scorer</h3>
-                <div class="value" id="gw-top-scorer">-</div>
-            </div>
-            <div class="card" style="border-left-color: #01ff88;">
-                <h3>🚀 Biggest Climber</h3>
-                <div class="value" id="gw-climber">-</div>
-            </div>
-        </div>
-
         <div id="league-title" style="font-size: 18px; font-weight: bold; margin-bottom: 10px; color: #37003c;"></div>
         <div id="standings-container">
-            <div class="loading">Loading standings and weekly stats...</div>
+            <div class="loading">Click "Refresh Data" or load league to begin...</div>
         </div>
     </div>
 
     <script>
-        let cachedLeagueData = null;
+        let leagueStandings = [];
+        let managersHistory = {}; // Maps entry_id -> array of historical GW records
+        let maxCompletedGW = 0;
 
         async function fetchLeague() {
             const leagueId = document.getElementById('league-input').value.trim();
@@ -153,134 +121,170 @@
 
             document.getElementById('current-league-id').innerText = leagueId;
             const container = document.getElementById('standings-container');
-            container.innerHTML = '<div class="loading">Fetching data from FPL...</div>';
-            document.getElementById('summary-section').style.display = 'none';
+            container.innerHTML = '<div class="loading">Fetching league standings & historical gameweeks...</div>';
+            document.getElementById('gw-select').disabled = true;
 
             try {
+                // 1. Fetch league standings
                 const response = await fetch(`/api/league/${leagueId}`);
                 if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
                 
-                cachedLeagueData = await response.json();
-                
-                if (cachedLeagueData.league && cachedLeagueData.league.name) {
-                    document.getElementById('league-title').innerText = cachedLeagueData.league.name;
+                const data = await response.json();
+                if (data.league && data.league.name) {
+                    document.getElementById('league-title').innerText = data.league.name;
                 }
 
-                setupGameweekDropdown();
-                displayStandings(cachedLeagueData.standings.results);
-                calculateWeeklyHighlights(cachedLeagueData.standings.results);
+                leagueStandings = data.standings.results;
+                managersHistory = {};
+
+                // 2. Fetch history for every manager in the league concurrently
+                const historyPromises = leagueStandings.map(async (manager) => {
+                    try {
+                        const histRes = await fetch(`/api/entry/${manager.entry}/history`);
+                        if (histRes.ok) {
+                            const histData = await histRes.json();
+                            managersHistory[manager.entry] = histData.current; // Array of past GW stats
+                        }
+                    } catch (err) {
+                        console.error(`Could not fetch history for manager ${manager.entry}`, err);
+                    }
+                });
+
+                await Promise.all(historyPromises);
+
+                // Determine maximum completed gameweeks based on fetched data length
+                maxCompletedGW = 0;
+                Object.values(managersHistory).forEach(historyArr => {
+                    if (historyArr && historyArr.length > maxCompletedGW) {
+                        maxCompletedGW = historyArr.length;
+                    }
+                });
+
+                setupGameweekDropdown(maxCompletedGW);
+
+                // Default view: Show the most recent completed gameweek
+                document.getElementById('gw-select').value = maxCompletedGW;
+                renderSelectedGameweek();
 
             } catch (error) {
                 console.error('Failed to load league data:', error);
-                container.innerHTML = `<div class="loading" style="color: #d9534f;">Failed to load league data. Check backend or League ID.</div>`;
+                container.innerHTML = `<div class="loading" style="color: #d9534f;">Failed to load league data. Check backend connection or League ID.</div>`;
             }
         }
 
-        function setupGameweekDropdown() {
+        function setupGameweekDropdown(totalGWs) {
             const select = document.getElementById('gw-select');
-            // Keep default option, clear others
-            select.innerHTML = '<option value="current">Latest Gameweek Update</option>';
+            select.innerHTML = '';
             
-            // Assume up to 38 gameweeks; you can dynamically populate based on completed events if needed
-            for (let i = 1; i <= 38; i++) {
+            for (let i = 1; i <= totalGWs; i++) {
                 const opt = document.createElement('option');
                 opt.value = i;
-                opt.innerText = `Gameweek ${i}`;
+                opt.innerText = `Gameweek ${i} Standings`;
                 select.appendChild(opt);
             }
+            select.disabled = false;
         }
 
-        function changeGameweek() {
-            const val = document.getElementById('gw-select').value;
-            if (!cachedLeagueData) return;
+        function renderSelectedGameweek() {
+            const selectedGW = parseInt(document.getElementById('gw-select').value);
+            if (!selectedGW || leagueStandings.length === 0) return;
 
-            if (val === 'current') {
-                displayStandings(cachedLeagueData.standings.results);
-                document.getElementById('summary-section').style.display = 'grid';
-            } else {
-                // For past gameweeks selected via dropdown, show notification or custom historical view
-                document.getElementById('standings-container').innerHTML = `
-                    <div class="loading">Historical view for Gameweek ${val} coming soon! Showing latest live table below:</div>
-                `;
-                setTimeout(() => displayStandings(cachedLeagueData.standings.results), 1000);
+            // Build reconstructed table for the selected GW
+            let gwTableData = leagueStandings.map(manager => {
+                const history = managersHistory[manager.entry] || [];
+                // Find stats up to selectedGW
+                let totalPointsUpToGW = 0;
+                let gwPoints = 0;
+
+                for (let i = 0; i < selectedGW && i < history.length; i++) {
+                    totalPointsUpToGW = history[i].total_points;
+                    if (i === selectedGW - 1) {
+                        gwPoints = history[i].points;
+                    }
+                }
+
+                return {
+                    entry_name: manager.entry_name,
+                    player_name: manager.player_name,
+                    entry: manager.entry,
+                    gw_points: gwPoints,
+                    total_points: totalPointsUpToGW
+                };
+            });
+
+            // Sort by total points descending, then tie-break if needed
+            gwTableData.sort((a, b) => b.total_points - a.total_points);
+
+            // Assign historical ranks and calculate movement vs previous week
+            let previousGWTable = null;
+            if (selectedGW > 1) {
+                previousGWTable = [...gwTableData]; // Build previous week state to calculate accurate rank changes
+                // (Simplified: compute ranks for selectedGW - 1)
+                previousGWTable = leagueStandings.map(manager => {
+                    const history = managersHistory[manager.entry] || [];
+                    let prevTotal = 0;
+                    for (let i = 0; i < selectedGW - 1 && i < history.length; i++) {
+                        prevTotal = history[i].total_points;
+                    }
+                    return { entry: manager.entry, total_points: prevTotal };
+                }).sort((a, b) => b.total_points - a.total_points);
             }
+
+            displayTable(gwTableData, previousGWTable, selectedGW);
         }
 
-        function displayStandings(standings) {
+        function displayTable(currentTable, prevTable, gw) {
             const container = document.getElementById('standings-container');
-            if (!standings || standings.length === 0) {
-                container.innerHTML = '<div class="loading">No standings found.</div>';
-                return;
-            }
-
+            
             let html = `
+                <h3 style="margin-top: 0; color: #555;">Standings after Gameweek ${gw}</h3>
                 <table>
                     <thead>
                         <tr>
                             <th>Rank</th>
                             <th>Team & Manager</th>
-                            <th>GW Points</th>
-                            <th>Last Wk Rank</th>
-                            <th>Total Points</th>
+                            <th>GW ${gw} Points</th>
+                            <th>Rank Change</th>
+                            <th>Cumulative Total</th>
                         </tr>
                     </thead>
                     <tbody>
             `;
 
-            standings.forEach(row => {
-                // Calculate rank movement (last_rank vs current rank)
-                // Note: last_rank 0 means new entry or unranked previously
+            currentTable.forEach((row, index) => {
+                const rank = index + 1;
+                
+                // Calculate position shift compared to previous week
                 let movementHtml = '<span class="rank-same">-</span>';
-                if (row.last_rank && row.last_rank > 0) {
-                    const diff = row.last_rank - row.rank; // positive means moved up
-                    if (diff > 0) {
-                        movementHtml = `<span class="rank-up">▲ +${diff}</span>`;
-                    } else if (diff < 0) {
-                        movementHtml = `<span class="rank-down">▼ ${diff}</span>`;
+                if (prevTable) {
+                    const prevIndex = prevTable.findIndex(p => p.entry === row.entry);
+                    if (prevIndex !== -1) {
+                        const prevRank = prevIndex + 1;
+                        const diff = prevRank - rank; // Positive means moved up
+                        if (diff > 0) {
+                            movementHtml = `<span class="rank-up">▲ +${diff}</span>`;
+                        } else if (diff < 0) {
+                            movementHtml = `<span class="rank-down">▼ ${diff}</span>`;
+                        }
                     }
                 }
 
                 html += `
                     <tr>
-                        <td><strong>${row.rank}</strong></td>
+                        <td><strong>${rank}</strong></td>
                         <td>
                             <div><strong>${row.entry_name}</strong></div>
                             <div style="font-size: 13px; color: #666;">${row.player_name}</div>
                         </td>
-                        <td>${row.event_total}</td>
+                        <td>${row.gw_points}</td>
                         <td>${movementHtml}</td>
-                        <td><strong>${row.total}</strong></td>
+                        <td><strong>${row.total_points}</strong></td>
                     </tr>
                 `;
             });
 
             html += `</tbody></table>`;
             container.innerHTML = html;
-        }
-
-        function calculateWeeklyHighlights(standings) {
-            if (!standings || standings.length === 0) return;
-
-            // Find highest GW points scorer
-            let topScorer = standings.reduce((prev, current) => (prev.event_total > current.event_total) ? prev : current);
-            
-            // Find biggest rank climber (highest positive difference between last_rank and rank)
-            let bestClimber = standings.reduce((prev, current) => {
-                const prevDiff = (prev.last_rank && prev.last_rank > 0) ? (prev.last_rank - prev.rank) : 0;
-                const currDiff = (current.last_rank && current.last_rank > 0) ? (current.last_rank - current.rank) : 0;
-                return (currDiff > prevDiff) ? current : prev;
-            });
-
-            document.getElementById('gw-top-scorer').innerText = `${topScorer.entry_name} (${topScorer.event_total} pts)`;
-            
-            const climberDiff = (bestClimber.last_rank && bestClimber.last_rank > 0) ? (bestClimber.last_rank - bestClimber.rank) : 0;
-            if (climberDiff > 0) {
-                document.getElementById('gw-climber').innerText = `${bestClimber.entry_name} (▲ +${climberDiff} spots)`;
-            } else {
-                document.getElementById('gw-climber').innerText = `No movement shifts yet`;
-            }
-
-            document.getElementById('summary-section').style.display = 'grid';
         }
 
         window.addEventListener('DOMContentLoaded', () => {
