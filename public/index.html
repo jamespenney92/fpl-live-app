@@ -60,6 +60,30 @@
         button:hover {
             background: #00e075;
         }
+        /* AI Summary Box Styling */
+        .ai-summary-card {
+            background: linear-gradient(135deg, #f8f9fa 0px, #e9ecef 100px);
+            border-left: 5px solid #01ff88;
+            background-color: #f8f9fa;
+            padding: 18px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.02);
+        }
+        .ai-summary-card h3 {
+            margin: 0 0 8px 0;
+            font-size: 15px;
+            color: #37003c;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .ai-summary-card p {
+            margin: 0;
+            font-size: 15px;
+            line-height: 1.5;
+            color: #444;
+        }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -104,6 +128,9 @@
             <button onclick="fetchLeague()">Refresh Data</button>
         </div>
 
+        <!-- AI Summary Box -->
+        <div id="ai-summary-container"></div>
+
         <div id="league-title" style="font-size: 18px; font-weight: bold; margin-bottom: 10px; color: #37003c;"></div>
         <div id="standings-container">
             <div class="loading">Click "Refresh Data" or load league to begin...</div>
@@ -112,7 +139,7 @@
 
     <script>
         let leagueStandings = [];
-        let managersHistory = {}; // Maps entry_id -> array of historical GW records
+        let managersHistory = {};
         let maxCompletedGW = 0;
 
         async function fetchLeague() {
@@ -122,10 +149,10 @@
             document.getElementById('current-league-id').innerText = leagueId;
             const container = document.getElementById('standings-container');
             container.innerHTML = '<div class="loading">Fetching league standings & historical gameweeks...</div>';
+            document.getElementById('ai-summary-container').innerHTML = '';
             document.getElementById('gw-select').disabled = true;
 
             try {
-                // 1. Fetch league standings
                 const response = await fetch(`/api/league/${leagueId}`);
                 if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
                 
@@ -137,13 +164,12 @@
                 leagueStandings = data.standings.results;
                 managersHistory = {};
 
-                // 2. Fetch history for every manager in the league concurrently
                 const historyPromises = leagueStandings.map(async (manager) => {
                     try {
                         const histRes = await fetch(`/api/entry/${manager.entry}/history`);
                         if (histRes.ok) {
                             const histData = await histRes.json();
-                            managersHistory[manager.entry] = histData.current; // Array of past GW stats
+                            managersHistory[manager.entry] = histData.current;
                         }
                     } catch (err) {
                         console.error(`Could not fetch history for manager ${manager.entry}`, err);
@@ -152,7 +178,6 @@
 
                 await Promise.all(historyPromises);
 
-                // Determine maximum completed gameweeks based on fetched data length
                 maxCompletedGW = 0;
                 Object.values(managersHistory).forEach(historyArr => {
                     if (historyArr && historyArr.length > maxCompletedGW) {
@@ -161,21 +186,18 @@
                 });
 
                 setupGameweekDropdown(maxCompletedGW);
-
-                // Default view: Show the most recent completed gameweek
                 document.getElementById('gw-select').value = maxCompletedGW;
                 renderSelectedGameweek();
 
             } catch (error) {
                 console.error('Failed to load league data:', error);
-                container.innerHTML = `<div class="loading" style="color: #d9534f;">Failed to load league data. Check backend connection or League ID.</div>`;
+                container.innerHTML = `<div class="loading" style="color: #d9534f;">Failed to load league data. Check connection or League ID.</div>`;
             }
         }
 
         function setupGameweekDropdown(totalGWs) {
             const select = document.getElementById('gw-select');
             select.innerHTML = '';
-            
             for (let i = 1; i <= totalGWs; i++) {
                 const opt = document.createElement('option');
                 opt.value = i;
@@ -189,48 +211,93 @@
             const selectedGW = parseInt(document.getElementById('gw-select').value);
             if (!selectedGW || leagueStandings.length === 0) return;
 
-            // Build reconstructed table for the selected GW
-            let gwTableData = leagueStandings.map(manager => {
-                const history = managersHistory[manager.entry] || [];
-                // Find stats up to selectedGW
-                let totalPointsUpToGW = 0;
-                let gwPoints = 0;
-
-                for (let i = 0; i < selectedGW && i < history.length; i++) {
-                    totalPointsUpToGW = history[i].total_points;
-                    if (i === selectedGW - 1) {
-                        gwPoints = history[i].points;
-                    }
-                }
-
-                return {
-                    entry_name: manager.entry_name,
-                    player_name: manager.player_name,
-                    entry: manager.entry,
-                    gw_points: gwPoints,
-                    total_points: totalPointsUpToGW
-                };
-            });
-
-            // Sort by total points descending, then tie-break if needed
-            gwTableData.sort((a, b) => b.total_points - a.total_points);
-
-            // Assign historical ranks and calculate movement vs previous week
-            let previousGWTable = null;
-            if (selectedGW > 1) {
-                previousGWTable = [...gwTableData]; // Build previous week state to calculate accurate rank changes
-                // (Simplified: compute ranks for selectedGW - 1)
-                previousGWTable = leagueStandings.map(manager => {
+            // Helper to generate table for any given GW index
+            const getTableForGW = (gwNum) => {
+                let table = leagueStandings.map(manager => {
                     const history = managersHistory[manager.entry] || [];
-                    let prevTotal = 0;
-                    for (let i = 0; i < selectedGW - 1 && i < history.length; i++) {
-                        prevTotal = history[i].total_points;
+                    let totalPoints = 0;
+                    let gwPoints = 0;
+
+                    for (let i = 0; i < gwNum && i < history.length; i++) {
+                        totalPoints = history[i].total_points;
+                        if (i === gwNum - 1) {
+                            gwPoints = history[i].points;
+                        }
                     }
-                    return { entry: manager.entry, total_points: prevTotal };
-                }).sort((a, b) => b.total_points - a.total_points);
+                    return {
+                        entry_name: manager.entry_name,
+                        player_name: manager.player_name,
+                        entry: manager.entry,
+                        gw_points: gwPoints,
+                        total_points: totalPoints
+                    };
+                });
+                table.sort((a, b) => b.total_points - a.total_points);
+                return table;
+            };
+
+            const currentTable = getTableForGW(selectedGW);
+            const prevTable = selectedGW > 1 ? getTableForGW(selectedGW - 1) : null;
+
+            displayAIsummary(currentTable, prevTable, selectedGW);
+            displayTable(currentTable, prevTable, selectedGW);
+        }
+
+        function displayAIsummary(currentTable, prevTable, gw) {
+            const summaryContainer = document.getElementById('ai-summary-container');
+            if (!currentTable || currentTable.length === 0) return;
+
+            // Find Gameweek Top Scorer
+            let topScorer = [...currentTable].sort((a, b) => b.gw_points - a.gw_points)[0];
+
+            // Find Biggest Climber & Faller
+            let biggestClimber = null;
+            let maxClimb = 0;
+            let biggestFaller = null;
+            let maxDrop = 0;
+
+            if (prevTable) {
+                currentTable.forEach((row, newIndex) => {
+                    const newRank = newIndex + 1;
+                    const oldIndex = prevTable.findIndex(p => p.entry === row.entry);
+                    if (oldIndex !== -1) {
+                        const oldRank = oldIndex + 1;
+                        const diff = oldRank - newRank; // positive = climbed
+                        if (diff > maxClimb) {
+                            maxClimb = diff;
+                            biggestClimber = { name: row.entry_name, jump: diff };
+                        }
+                        if (diff < -maxDrop) {
+                            maxDrop = Math.abs(diff);
+                            biggestFaller = { name: row.entry_name, drop: maxDrop };
+                        }
+                    }
+                });
             }
 
-            displayTable(gwTableData, previousGWTable, selectedGW);
+            const leader = currentTable[0];
+
+            // Construct smart narrative summary paragraph
+            let narrative = `In <strong>Gameweek ${gw}</strong>, <strong>${topScorer.entry_name}</strong> led the pack with a stellar <strong>${topScorer.gw_points} points</strong>. `;
+            
+            if (biggestClimber && biggestClimber.jump > 0) {
+                narrative += `The standout mover of the round was <strong>${biggestClimber.name}</strong>, who surged up <strong>${biggestClimber.jump} spots</strong>. `;
+            } else {
+                narrative += `The standings remained tightly contested across the board. `;
+            }
+
+            if (biggestFaller && biggestFaller.drop > 0) {
+                narrative += `Meanwhile, <strong>${biggestFaller.name}</strong> had a tough week, slipping <strong>${biggestFaller.drop} positions</strong>. `;
+            }
+
+            narrative += `At the summit, <strong>${leader.entry_name}</strong> maintains overall command with <strong>${leader.total_points} total points</strong>.`;
+
+            summaryContainer.innerHTML = `
+                <div class="ai-summary-card">
+                    <h3>🤖 Gameweek ${gw} Automated Recap</h3>
+                    <p>${narrative}</p>
+                </div>
+            `;
         }
 
         function displayTable(currentTable, prevTable, gw) {
@@ -253,14 +320,13 @@
 
             currentTable.forEach((row, index) => {
                 const rank = index + 1;
-                
-                // Calculate position shift compared to previous week
                 let movementHtml = '<span class="rank-same">-</span>';
+                
                 if (prevTable) {
                     const prevIndex = prevTable.findIndex(p => p.entry === row.entry);
                     if (prevIndex !== -1) {
                         const prevRank = prevIndex + 1;
-                        const diff = prevRank - rank; // Positive means moved up
+                        const diff = prevRank - rank;
                         if (diff > 0) {
                             movementHtml = `<span class="rank-up">▲ +${diff}</span>`;
                         } else if (diff < 0) {
